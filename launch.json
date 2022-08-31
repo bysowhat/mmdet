@@ -1,0 +1,73 @@
+{
+	// Use IntelliSense to learn about possible attributes.
+	// Hover to view descriptions of existing attributes.
+	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Python: browse_dataset",
+			"type": "python",
+			"request": "launch",
+			"program": "tools/misc/browse_dataset.py",
+			"console": "integratedTerminal",
+			"justMyCode": true,
+			"args": ["configs/fusion/fusion_base_r18.py",
+									"--output-dir", "/home/a/Projects_data/mmdet/1",
+									"--task", "fusion-det", "--online", "--aug"],
+			"env": {"PYTHONPATH": "${workspaceFolder}",},
+					"gevent": true
+		},
+		{
+			"name": "Python: create_data",
+			"type": "python",
+			"request": "launch",
+			"program": "tools/create_data.py",
+			"console": "integratedTerminal",
+			"justMyCode": true,
+			"args": ["nuscenes", 
+					"--version", 
+					"v1.0",
+					"--root-path",
+					"data/nuscenesfull",
+					"--out-dir",
+					"data/nuscenesfullo",
+					"--extra-tag",
+					"nuscenes",
+					"--max-sweeps",
+					"0"],
+			"env": {"PYTHONPATH": "${workspaceFolder}",},
+					"gevent": true
+		},
+		{
+			"name": "Python: train",
+			"type": "python",
+			"request": "launch",
+			"program": "tools/train.py",
+			"console": "integratedTerminal",
+			"justMyCode": true,
+			"args": ["configs/fusion/fusion_base_r18.py", "--no-validate"],
+			"env": {"PYTHONPATH": "${workspaceFolder}",
+					"CUDA_LAUNCH_BLOCKING": "1",
+					"gevent": "true"
+				}
+		},
+		{
+			"name": "Python: test",
+			"type": "python",
+			"request": "launch",
+			"program": "tools/test.py",
+			"console": "integratedTerminal",
+			"justMyCode": true,
+			"args": ["configs/fusion/fusion_base_r18.py", 
+							"work_dirs/fusion_base_r18/latest.pth",
+							"--eval", "box",
+							"--show", "--show-dir", "work_dirs/fusion_base_r18/results", "--show-score-thr-img", "0.2",
+							"--show-score-thr-pts", "0.2","--show-score-thr-fus", "0.2"
+						],
+			"env": {"PYTHONPATH": "${workspaceFolder}",
+					"CUDA_LAUNCH_BLOCKING": "1",
+					"gevent": "true"
+				}
+		}
+	]
+}
