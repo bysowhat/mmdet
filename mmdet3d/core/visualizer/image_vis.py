@@ -116,10 +116,10 @@ def map_pointcloud_to_image(points,
     :return (pointcloud <np.float: 2, n)>, coloring <np.float: n>, image <Image>).
     """
     mask = np.ones(points.shape[0], dtype=bool)
-    mask = np.logical_and(mask, points[:,0] >= point_cloud_range[0])
-    mask = np.logical_and(mask, points[:,0] <= point_cloud_range[3])
-    mask = np.logical_and(mask, points[:,1] >= point_cloud_range[1])
-    mask = np.logical_and(mask, points[:,1] <= point_cloud_range[4])
+    mask = np.logical_and(mask, points[:,0] > point_cloud_range[0]+0.5)
+    mask = np.logical_and(mask, points[:,0] < point_cloud_range[3]-0.5)
+    mask = np.logical_and(mask, points[:,1] > point_cloud_range[1]+0.5)
+    mask = np.logical_and(mask, points[:,1] < point_cloud_range[4]-0.5)
     points = points[mask, :]
     
     points_lidar = copy.deepcopy(points)

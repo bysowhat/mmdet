@@ -12,7 +12,7 @@ img_norm_cfg = dict(
 
 data = dict(
     samples_per_gpu=2,
-    workers_per_gpu=0)
+    workers_per_gpu=6)
 # optimizer
 optimizer = dict(
     lr=0.003, paramwise_cfg=dict(bias_lr_mult=2., bias_decay_mult=0.))

@@ -29,6 +29,7 @@ class Fusion(BaseDetector):
                  img_neck,
                  img_bbox_head,
                  pts_bbox_head,
+                 fuse_bbox_head,
                  train_cfg=None,
                  test_cfg=None,
                  pretrained=None):
@@ -40,8 +41,11 @@ class Fusion(BaseDetector):
         img_bbox_head.update(test_cfg=test_cfg)
         pts_bbox_head.update(train_cfg=train_cfg)
         pts_bbox_head.update(test_cfg=test_cfg)
+        fuse_bbox_head.update(train_cfg=train_cfg)
+        fuse_bbox_head.update(test_cfg=test_cfg)
         self.img_bbox_head = build_head(img_bbox_head)
         self.pts_bbox_head = build_head(pts_bbox_head)
+        self.fuse_bbox_head = build_head(fuse_bbox_head)
         if pts_voxel_layer:
             self.pts_voxel_layer = Voxelization(**pts_voxel_layer)
         if pts_voxel_encoder:
@@ -172,6 +176,21 @@ class Fusion(BaseDetector):
                                                 gt_bboxes_ignore)
         return loss
     
+    def forward_train_fuse(self,
+                          bev,
+                          gt_bboxes_3d_bev, 
+                          gt_labels_3d_bev,
+                          gt_bboxes_ignore, 
+                          feats,
+                          img_metas):
+        loss = self.fuse_bbox_head.forward_train(bev,
+                                                feats,
+                                                img_metas,
+                                                gt_bboxes_3d_bev,
+                                                gt_labels_3d_bev,
+                                                gt_bboxes_ignore)
+        return loss
+    
     def parase_loss(self, losses):
         weights = self.train_cfg['branch_weight']
         final_loss = {}
@@ -199,14 +218,15 @@ class Fusion(BaseDetector):
 
         def _unique_coord(img_coord, step=1000):
             tempt = img_coord[:, 0]*step + img_coord[:, 1]
-            tempt_unique, unique_index = _unique(tempt)
-            print(1)
+            _, unique_index = _unique(tempt)
+            return unique_index
 
         img_coord = coord[:, :2]
         pts_coord = coord[:, 2:]
-        _unique_coord(img_coord)
+        img_index = _unique_coord(img_coord)
+        pts_index = _unique_coord(pts_coord)
 
-        print(1)
+        return coord[pts_index, :]
 
     def caculate_pos(self, coords, i_lvl):
         img_stride = self.img_bbox_head.strides[i_lvl]
@@ -216,30 +236,67 @@ class Fusion(BaseDetector):
         point_cloud_range = torch.tensor(np.asarray(point_cloud_range[:2]), device=coords[0].device)
         voxel_size = torch.tensor(np.asarray(voxel_size[:2]), device=coords[0].device)
         img_nums = len(coords)
+        
+        unique_coord_list = []
         for i_img in range(img_nums):
             coord = coords[i_img]
             coord[:, 0] /= img_stride
             coord[:, 1] /= img_stride
             coord[:, 2:4] = (coord[:, 2:4] - point_cloud_range[None])/(voxel_size*pts_stride)
-            coord = torch.round(coord)
-            self.unique_coord(coord)
+            coord = torch.round(coord).long()
+            unique_coord = self.unique_coord(coord)
+            unique_coord_list.append(unique_coord)
+        return unique_coord_list
+
+    def fuse_feats_coord(self, img_feats, pts_feat, coord_pos_list, num_imgs):
+        fuse_feat = pts_feat.new_zeros(pts_feat.size())
+        fuse_feat_mask = pts_feat.new_ones(pts_feat.shape[1], pts_feat.shape[2])
+        
+        pts_h = pts_feat.shape[1]
+        pts_w = pts_feat.shape[2]
+        img_h = img_feats[0].shape[1]
+        img_w = img_feats[0].shape[2]
+
+        for i in range(num_imgs):
+            img_feat = img_feats[i]
+            coord_pos = coord_pos_list[i]
+            mask = pts_feat.new_ones(coord_pos.shape[0], dtype=torch.bool)
+            mask = torch.logical_and(mask, coord_pos[:,0] < img_w)
+            mask = torch.logical_and(mask, coord_pos[:,1] < img_h)
+            mask = torch.logical_and(mask, coord_pos[:,2] < pts_w)
+            mask = torch.logical_and(mask, coord_pos[:,3] < pts_h)
+            coord_pos = coord_pos[mask, :]
+
+            img_feat = img_feat.view(-1, img_h*img_w)
+            img_index = coord_pos[:,1] * img_w + coord_pos[:,0]
+            img_feat_gather = img_feat[:, img_index]
             
-        return 1
+            pts_feat_tempt = pts_feat.new_zeros(pts_feat.size())
+            pts_feat_mask = pts_feat.new_zeros(pts_feat.shape[1]*pts_feat.shape[2])
+           
+            pts_feat_tempt = pts_feat_tempt.view(-1, pts_h*pts_w)
+            pts_index = coord_pos[:,3] * pts_w + coord_pos[:,2]
+            pts_feat_tempt[:, pts_index] = img_feat_gather
+            pts_feat_mask[pts_index] = 1.0
+            fuse_feat += pts_feat_tempt.view(-1, pts_h, pts_w)
+            fuse_feat_mask += pts_feat_mask.view(pts_h, pts_w)
+        return fuse_feat / fuse_feat_mask
 
     def fuse_feature(self, img_feats, pts_feats, coords_list):
-        
-
-        
-
         num_lvl = len(img_feats)
         bs = pts_feats[0].shape[0]
+        num_imgs = int(img_feats[0].shape[0]/bs)
 
-        fus_feats = []
+        fuse_feats = []
         for i_lvl in range(num_lvl):
+            img_fuse_feats = []
             for i_b in range(bs):
                 coords = coords_list[i_b]
-                coord_pixel = self.caculate_pos(coords, i_lvl)
-        print(1)
+                # Todo: Adjust positon selection method
+                coord_pos = self.caculate_pos(coords, i_lvl)
+                img_fuse_feats.append(self.fuse_feats_coord(img_feats[i_lvl][num_imgs*i_b:num_imgs*(i_b+1)], pts_feats[i_lvl][i_b], coord_pos, num_imgs))
+            fuse_feats.append(torch.stack(img_fuse_feats)+pts_feats[i_lvl])
+        return fuse_feats
 
     def forward_train(self,
                       img,
@@ -284,8 +341,10 @@ class Fusion(BaseDetector):
         Returns:
             dict[str, Tensor]: A dictionary of loss components.
         """
+        ###################
+        # img branch
+        ###################
         img_feats = self.extract_img_feat(img, img_metas)
-        pts_feats, bevimg = self.extract_pts_feat(points, img_feats, img_metas)
         img_losses = self.forward_train_img(gt_bboxes2d_cam_list, 
                                             gt_labels2d_cam_list,
                                             gt_bboxes_3d_cam_list, 
@@ -297,21 +356,33 @@ class Fusion(BaseDetector):
                                             camera_mask,
                                             img_feats,
                                             img_metas)
+        ###################
+        # pts branch
+        ###################
+        pts_feats, bevimg = self.extract_pts_feat(points, img_feats, img_metas)
         pts_losses = self.forward_train_pts(bevimg,
                                             gt_bboxes_3d_bev, 
                                             gt_labels_3d_bev,
                                             gt_bboxes_ignore, 
                                             pts_feats,
                                             img_metas)
-        
 
-        # fus_feats = self.fuse_feature(img_feats, pts_feats, coords_list)
-        
-        final_loss = self.parase_loss([img_losses, pts_losses, None])
+        ###################
+        # fuse branch
+        ###################
+        fuse_feats = self.fuse_feature(img_feats, pts_feats, coords_list)
+        fuse_losses = self.forward_train_fuse(bevimg,
+                                              gt_bboxes_3d_bev, 
+                                              gt_labels_3d_bev,
+                                              gt_bboxes_ignore, 
+                                              fuse_feats,
+                                              img_metas)
+
+        final_loss = self.parase_loss([img_losses, pts_losses, fuse_losses])
         return final_loss
 
 
-    def forward_test(self, imgs, img_metas, points, **kwargs):
+    def forward_test(self, imgs, img_metas, points, coords_list, **kwargs):
         """
         Args:
             imgs (List[Tensor]): the outer list indicates test-time
@@ -345,7 +416,7 @@ class Fusion(BaseDetector):
             # indicates images in a batch.
             # The Tensor should have a shape Px4, where P is the number of
             # proposals.
-            return self.simple_test(imgs[0], img_metas, points, **kwargs)
+            return self.simple_test(imgs[0], img_metas, points, coords_list, **kwargs)
         else:
             raise NotImplementedError()
             assert imgs[0].size(0) == 1, 'aug test does not support ' \
@@ -370,7 +441,7 @@ class Fusion(BaseDetector):
         outs = self.bbox_head(x)
         return outs
 
-    def simple_test(self, imgs, img_metas, points, rescale=False, **kwargs):
+    def simple_test(self, imgs, img_metas, points, coords_list, rescale=False, **kwargs):
         """Test function without test-time augmentation.
 
         Args:
@@ -400,7 +471,15 @@ class Fusion(BaseDetector):
             bbox3d2result(det_bboxes, det_scores, det_labels, det_attrs)
             for det_bboxes, det_scores, det_labels, det_attrs in pts_results_list
         ]
-        return img_bbox_results, pts_bbox_results
+
+        # Fusion predict
+        fuse_feats = self.fuse_feature(img_feat, pts_feats, coords_list)
+        fuse_results_list = self.pts_bbox_head.simple_test(bevimg, fuse_feats, img_metas, box_type_3d='box_type_3d_lidar')
+        fuse_bbox_results = [
+            bbox3d2result(det_bboxes, det_scores, det_labels, det_attrs)
+            for det_bboxes, det_scores, det_labels, det_attrs in fuse_results_list
+        ]
+        return img_bbox_results, pts_bbox_results, fuse_bbox_results
 
     def aug_test(self, imgs, img_metas, rescale=False):
         """Test function with test time augmentation.
@@ -509,7 +588,8 @@ class Fusion(BaseDetector):
                     result,
                     out_dir,
                     show,
-                    score_thr):
+                    score_thr,
+                    snapshot):
         for batch_id in range(len(result)):
             if isinstance(data['points'], DC):
                 points = data['points']._data[0][batch_id].numpy()
@@ -535,7 +615,7 @@ class Fusion(BaseDetector):
             file_name = os.path.split(pts_filename)[-1].split('.')[0]
 
             assert out_dir is not None, 'Expect out_dir, got none.'
-            inds = result[batch_id]['scores_3d'] > 0.1
+            inds = result[batch_id]['scores_3d'] > score_thr
             pred_bboxes = result[batch_id]['boxes_3d'][inds]
 
             # for now we convert points and bbox into depth mode
@@ -550,12 +630,13 @@ class Fusion(BaseDetector):
                     f'Unsupported box_mode_3d {box_mode_3d} for conversion!')
 
             pred_bboxes = pred_bboxes.tensor.cpu().numpy()
-            show_result(points, None, pred_bboxes, out_dir, file_name, show=True)
+            show_result(points, None, pred_bboxes, out_dir, file_name, show=show, snapshot=snapshot)
 
     def show_results(self,
                     data, 
                     img_result,
                     pts_result,
+                    fuse_result,
                     out_dir,
                     show,
                     score_thrs):
@@ -569,5 +650,14 @@ class Fusion(BaseDetector):
                               pts_result,
                               out_dir+'_pts',
                               show,
-                              score_thrs[1])
+                              score_thrs[1],
+                              snapshot=True)
+        
+        self.show_pts_results(data, 
+                              fuse_result,
+                              out_dir+'_fus',
+                              show,
+                              score_thrs[2],
+                              snapshot=True)
+           
            

@@ -40,7 +40,7 @@ def single_gpu_test(model,
     prog_bar = mmcv.ProgressBar(len(dataset))
     for i, data in enumerate(data_loader):
         with torch.no_grad():
-            img_result, pts_result = model(return_loss=False, rescale=True, **data)
+            img_result, pts_result, fuse_result = model(return_loss=False, rescale=True, **data)
 
         if show:
             # Visualize the results of MMDetection3D model
@@ -52,6 +52,7 @@ def single_gpu_test(model,
                     data,
                     img_result,
                     pts_result,
+                    fuse_result,
                     out_dir=out_dir,
                     show=show,
                     score_thrs=[show_score_thr_img, show_score_thr_pts, show_score_thr_fus])
